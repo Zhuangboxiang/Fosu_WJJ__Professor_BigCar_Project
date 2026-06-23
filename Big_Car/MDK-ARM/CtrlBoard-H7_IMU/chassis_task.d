@@ -61,4 +61,6 @@ ctrlboard-h7_imu/chassis_task.o: ..\User\APP\chassis_task.c \
   ..\Middlewares\Third_Party\FreeRTOS\Source\include\queue.h \
   ..\Middlewares\Third_Party\FreeRTOS\Source\include\event_groups.h \
   ..\Middlewares\Third_Party\FreeRTOS\Source\include\timers.h \
+  ..\User\Devices\PC_Comm\PC_Comm.h \
+  D:\Keil_v5-536\ARM\ARMCLANG\Bin\..\include\stdbool.h \
   ..\User\Lib\user_lib.h ..\Core\Inc\usart.h ..\Core\Inc\main.h

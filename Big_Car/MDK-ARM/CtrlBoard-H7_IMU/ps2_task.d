@@ -63,4 +63,6 @@ ctrlboard-h7_imu/ps2_task.o: ..\User\APP\ps2_task.c \
   ..\Drivers\STM32H7xx_HAL_Driver\Inc\stm32h7xx_hal_pcd_ex.h \
   ..\User\Bsp\bsp_dwt.h ..\Core\Inc\main.h ..\Core\Inc\gpio.h \
   ..\User\APP\chassis_task.h \
-  ..\User\Devices\Stepper_Motor\Stepper_Motor.h
+  ..\User\Devices\Stepper_Motor\Stepper_Motor.h \
+  ..\User\Devices\PC_Comm\PC_Comm.h \
+  D:\Keil_v5-536\ARM\ARMCLANG\Bin\..\include\stdbool.h

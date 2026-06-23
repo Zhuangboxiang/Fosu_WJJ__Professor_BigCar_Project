@@ -66,7 +66,7 @@ void USB_ReceiveCallback(uint16_t Len)
     USBD_CDC_ReceivePacket(&hUsbDeviceHS);
     
     if (pDataBuf != NULL) {
-        PC_Info_Update(pDataBuf, &PC_RxInfo); 
+        PC_Info_Update(pDataBuf, Len); 
     }
 }
 

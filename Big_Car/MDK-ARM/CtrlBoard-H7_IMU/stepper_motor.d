@@ -64,4 +64,6 @@ ctrlboard-h7_imu/stepper_motor.o: \
   ..\Drivers\STM32H7xx_HAL_Driver\Inc\stm32h7xx_hal_pcd_ex.h \
   ..\Core\Inc\usart.h ..\Core\Inc\main.h ..\User\Bsp\bsp_dwt.h \
   ..\Core\Inc\main.h ..\User\APP\chassis_task.h \
-  ..\User\Devices\Stepper_Motor\Stepper_Motor.h
+  ..\User\Devices\Stepper_Motor\Stepper_Motor.h \
+  ..\User\Devices\PC_Comm\PC_Comm.h \
+  D:\Keil_v5-536\ARM\ARMCLANG\Bin\..\include\stdbool.h

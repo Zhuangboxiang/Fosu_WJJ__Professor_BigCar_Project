@@ -3,6 +3,7 @@
 
 #include "main.h"
 #include "Stepper_Motor.h"
+#include "PC_Comm.h"
 
 #define CHASSIS_WHEEL_R         0.0625f     /* 轮半径 [m] */
 #define CHASSIS_WHEEL_BASE      0.30f       /* 轴距(前后) [m] */
@@ -19,12 +20,20 @@
 #define WHEEL_LB  2
 #define WHEEL_RB  3
 
+typedef enum
+{
+    CHASSIS_MODE_RC  = 0,   /* 遥控器模式 */
+    CHASSIS_MODE_NAV = 1,   /* 导航模式(上位机) */
+} Chassis_Mode_e;
+
 typedef struct
 {
     Stepper_Motor_Info_Typedef Motor[4];
-    float vx_target;
-    float vy_target;
-    float wz_target;
+    Chassis_Mode_e mode;			/* 控制模式 */
+    float vx_target;				/* 目标速度 X [m/s] */
+    float vy_target;				/* 目标速度 Y [m/s] */
+    float wz_target;				/* 目标角速度 Z [rad/s] */
+    PC_Speed_Typedef pc_speed;		/* 上位机通信速度(收发统一) */
     uint8_t init_flag;
 } Chassis_Info_Typedef;
 

@@ -69,6 +69,8 @@ ctrlboard-h7_imu/freertos.o: ..\Core\Src\freertos.c \
   D:\Keil_v5-536\ARM\ARMCLANG\Bin\..\include\float.h \
   D:\Keil_v5-536\ARM\ARMCLANG\Bin\..\include\stdlib.h \
   ..\User\APP\chassis_task.h \
-  ..\User\Devices\Stepper_Motor\Stepper_Motor.h ..\User\APP\ps2_task.h \
-  ..\User\Devices\PS2_Device\PS2_Device.h ..\Core\Inc\usart.h \
-  ..\Core\Inc\main.h ..\Core\Inc\gpio.h
+  ..\User\Devices\Stepper_Motor\Stepper_Motor.h \
+  ..\User\Devices\PC_Comm\PC_Comm.h \
+  D:\Keil_v5-536\ARM\ARMCLANG\Bin\..\include\stdbool.h \
+  ..\User\APP\ps2_task.h ..\User\Devices\PS2_Device\PS2_Device.h \
+  ..\Core\Inc\usart.h ..\Core\Inc\main.h ..\Core\Inc\gpio.h

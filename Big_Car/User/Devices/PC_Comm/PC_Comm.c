@@ -7,88 +7,110 @@
  * @encoding UTF-8
  ******************************************************************************
  * @attention
- * * 模板示例 未运用到实际工程里面
+ * * 无
  ******************************************************************************
  */
 
 /* Includes ---------------------------------------------------------------- */
 #include "PC_Comm.h"
+#include "bsp_usb.h"
+#include "usbd_cdc_if.h"
+#include "chassis_task.h"
 #include <string.h>
 
 /* Defines ----------------------------------------------------------------- */
 
 /* Global variable --------------------------------------------------------- */
-PC_Info_Typedef PC_RxInfo = {
-    .online_cnt = 0xFAU,
-    .pc_lost = true,
-};
-
-__attribute__((section (".AXI_SRAM"))) uint8_t PC_MultiRx_Buf[PC_RX_DATA_LEN];
+PC_TxFrame_Typedef PC_TxFrame;
+uint8_t PC_TxBuf[PC_TX_FRAME_LEN];
 
 /* Static Fun -------------------------------------------------------------- */
+/**
+ * @brief  计算前21字节异或校验和(发送帧用)
+ */
+static uint8_t TX_XOR_Checksum(uint8_t *p)
+{
+    uint8_t sum = 0;
+    for (uint8_t i = 0; i < PC_TX_FRAME_LEN - 1; i++)
+    {
+        sum ^= p[i];
+    }
+    return sum;
+}
+
+/**
+ * @brief  计算前13字节累加和低八位(接收帧用)
+ */
+static uint8_t RX_Sum_L8(uint8_t *p)
+{
+    uint16_t sum = 0;
+    for (uint8_t i = 0; i < PC_RX_FRAME_LEN - 2; i++)
+    {
+        sum += p[i];
+    }
+    return (uint8_t)(sum & 0xFF);
+}
 
 /* Functions --------------------------------------------------------------- */
 /**
- * @brief	上位机数据解包
- * @param	buff: 接收数据缓冲区指针
- * @param	PC_Info: 上位机信息结构体指针
- * @return	无
- * @note	无
+ * @brief  上位机→小车 数据解包 (USB接收回调中调用)
+ * @param  buff: 接收数据缓冲区
+ * @param  len: 本次接收长度
+ *
+ * @note   上位机下发格式 (15字节):
+ *         包头(0x5A) + Vx(f4) + Vy(f4) + Vw(f4) + 校验和(u8,前13字节累加低八位) + 包尾(0xA5)
  */
-void PC_Info_Update(uint8_t *buff,PC_Info_Typedef *PC_Info)
+void PC_Info_Update(uint8_t *buff, uint16_t len)
 {
-    // PC_Info->HEAD = buff[0];
-    // if(PC_Info->HEAD == PC_RxHEAD)
-    // {
-    //     PC_Info->Data_Len = buff[1];
-    //     if (PC_Info->Data_Len == PC_RX_DATA_LEN)
-    //     {
-    //         PC_Info->Vx.uval = buff[2]  | buff[3] << 8 | buff[4] << 16 | buff[5] << 24;
-    //         PC_Info->Vy.uval = buff[6]  | buff[7] << 8 | buff[8] << 16 | buff[9] << 24;
-    //         PC_Info->Vz.uval = buff[10] | buff[11] << 8 | buff[12] << 16 | buff[13] << 24;
-    //         PC_Info->Reserved[0] = buff[14];
-    //         PC_Info->Reserved[1] = buff[15];
-    //         PC_Info->Reserved[2] = buff[16];
-    //         PC_Info->Reserved[3] = buff[17];
-	// 		   PC_Info->Checksum = buff[18];
-    //         PC_Info->pc_lost = false;
-    //         PC_Info->online_cnt = 0xFAU;
-    //     }
-    // }
+    if (len != PC_RX_FRAME_LEN)
+        return;
+
+    if (buff[0] != PC_RX_HEAD || buff[PC_RX_FRAME_LEN - 1] != PC_RX_TAIL)
+        return;
+
+    if (RX_Sum_L8(buff) != buff[PC_RX_FRAME_LEN - 2])
+        return;
+
+    /* 解析 vx/vy/vw → Chassis.pc_speed (小端序 float) */
+    memcpy(&Chassis.pc_speed.rx_vx, &buff[1], 4);
+    memcpy(&Chassis.pc_speed.rx_vy, &buff[5], 4);
+    memcpy(&Chassis.pc_speed.rx_vw, &buff[9], 4);
 }
 
 /**
- * @brief	上位机数据上传
- * @param	无
- * @return	无
- * @note	无
+ * @brief  小车→上位机 数据上传 (周期调用)
+ * @param  vx/vy/vw: 速度值
+ *
+ * @note   发送格式 (22字节):
+ *         帧头(0xAA) + Vx(f4) + Vy(f4) + Vw(f4) + mode(i4) + Reserved2(i4) + Checksum(XOR u8)
  */
-void PC_Info_Upload()
+void PC_Info_Upload(float vx, float vy, float vw)
 {
+    PC_TxFrame.HEAD        = PC_TX_HEAD;
+    PC_TxFrame.Vx.fval     = vx;
+    PC_TxFrame.Vy.fval     = vy;
+    PC_TxFrame.Vw.fval     = vw;
+    PC_TxFrame.Reserved1   = (int32_t)Chassis.mode;
+    PC_TxFrame.Reserved2   = 0;
+    PC_TxFrame.Checksum    = TX_XOR_Checksum((uint8_t *)&PC_TxFrame);
 
+    memcpy(PC_TxBuf, &PC_TxFrame, PC_TX_FRAME_LEN);
+    if (CDC_Transmit_HS(PC_TxBuf, PC_TX_FRAME_LEN) == USBD_BUSY)
+    {
+        /* 上一帧未发完, 本帧丢弃 */
+    }
 }
 
 /**
- * @brief	上位机离线检测
- * @param	PC_Info: 上位机信息结构体指针
- * @return	无
- * @note	在线计数值低于阈值时判定为离线
+ * @brief  切换底盘控制模式
+ * @param  mode: CHASSIS_MODE_RC(0) / CHASSIS_MODE_NAV(1)
  */
-void PC_Offline_Detect(PC_Info_Typedef *PC_Info)
+void PC_Set_Chassis_Mode(uint8_t mode)
 {
-    if(PC_Info->online_cnt <= 0x32U)
+    if (mode <= CHASSIS_MODE_NAV)
     {
-        memset(PC_Info,0,sizeof(PC_Info_Typedef));
-        PC_Info->pc_lost = true;
-    }
-    else if(PC_Info->online_cnt > 0)
-    {
-        PC_Info->online_cnt--;
+        Chassis.mode = (Chassis_Mode_e)mode;
     }
 }
-
-/* Private functions ------------------------------------------------------- */
-
-/* Interrupt functions ----------------------------------------------------- */
 
 /* ------------------------------------------------------------------------- */
