@@ -1,12 +1,37 @@
+/**
+ ******************************************************************************
+ * @file    chassis_task.c
+ * @brief   底盘控制任务
+ *
+ *  架构说明:
+ *  - 每种控制模式对应一个独立的 Mode_Handler 函数
+ *  - 主循环通过 Chassis_Mode_Dispatch 根据当前模式分派到对应 handler
+ *  - 速度来源: RC模式由PS2任务设置 | NAV模式由上位机设置
+ *
+ *  +------------------+      +-----------------------+
+ *  |  chassis_task    | ---> | Chassis_Mode_Dispatch |
+ *  +------------------+      +-----------------------+
+ *                                     |
+ *              +----------------------+----------------------+
+ *              |                      |                      |
+ *     CHASSIS_MODE_RC       CHASSIS_MODE_NAV          (default)
+ *              |                      |                      |
+ *     RC_Mode_Handler       NAV_Mode_Handler        Chassis_Stop
+ *   (PS2任务直接设速)     (上位机速度→SetSpeed)   (安全停车)
+ *
+ ******************************************************************************
+ */
+
+/* Includes ------------------------------------------------------------------*/
 #include "chassis_task.h"
 #include "cmsis_os.h"
 #include "user_lib.h"
-#include "usart.h"
 #include "PC_Comm.h"
 
-#define CHASSIS_TASK_PERIOD_MS  10
-#define RPM_TO_MOTOR(r)         ((int16_t)((r) * Stepper_Ratio))  /* 轮端RPM → 电机端RPM（减速比1:13.7） */
+/* Private define ------------------------------------------------------------*/
+#define RPM_TO_MOTOR(r)  ((int16_t)((r) * Stepper_Ratio))
 
+/* Global variable -----------------------------------------------------------*/
 Chassis_Info_Typedef Chassis = {
     .Motor[WHEEL_LF] = {
         .Set.motor_Addr = 1,
@@ -24,75 +49,45 @@ Chassis_Info_Typedef Chassis = {
         .Set.motor_Addr = 4,
         .Set.Firmware_v = Firmware_Emm,
     },
-    .mode = CHASSIS_MODE_RC,
-    .vx_target = 0,
-    .vy_target = 0,
-    .wz_target = 0,
-    .pc_speed = {0},
-    .init_flag = 0,
+    .mode       = CHASSIS_MODE_RC,
+    .vx_target  = 0,
+    .vy_target  = 0,
+    .wz_target  = 0,
+    .pc_speed   = {0},
+    .init_flag  = 0,
 };
 
-static void Mecanum_Wheel_Calc(Chassis_Info_Typedef *chassis, float vx, float vy, float wz);
+/* Private function prototypes -----------------------------------------------*/
+static void Chassis_RC_Mode_Handler(Chassis_Info_Typedef *chassis);
+static void Chassis_NAV_Mode_Handler(Chassis_Info_Typedef *chassis);
+static void Chassis_Mode_Dispatch(Chassis_Info_Typedef *chassis);
 static void Chassis_Motor_Output(Chassis_Info_Typedef *chassis);
+static void Mecanum_Wheel_Calc(Chassis_Info_Typedef *chassis, float vx, float vy, float wz);
 
+/* ---------------------------------------------------------------------------*/
+/*                            Public Functions                                */
+/* ---------------------------------------------------------------------------*/
+
+/**
+ * @brief  底盘控制任务入口
+ */
 void chassis_task(void)
 {
     Chassis_Init(&Chassis);
 
     while (1)
     {
-//        Stepper_Motor_Call_Info(&Chassis.Motor[WHEEL_LF], 2);
-//        Stepper_Motor_Call_Info(&Chassis.Motor[WHEEL_RF], 2);
-//        Stepper_Motor_Call_Info(&Chassis.Motor[WHEEL_LB], 2);
-//        Stepper_Motor_Call_Info(&Chassis.Motor[WHEEL_RB], 2);
-
-        Chassis_Motor_Output(&Chassis);
-
-        /* USB虚拟串口收发 */
-        {
-#if 0   /* 测试用例: vx/vy/vw 每10次±1, 到边界反转 */
-            static uint32_t cnt = 0;
-            static float    vx  = 0,  vy  = 0,  vw  = 0;
-            static int8_t   vx_dir = 1, vy_dir = -1, vw_dir = 1;  /* 1→递增, -1→递减 */
-
-            if (++cnt >= 10)
-            {
-                cnt = 0;
-
-                vx += vx_dir;
-                if      (vx >= 100) { vx = 100; vx_dir = -1; }
-                else if (vx <= -100) { vx =   0; vx_dir =  1; }
-
-                vy += vy_dir;
-                if      (vy <= -30) { vy = -30; vy_dir =  1; }
-                else if (vy >=  30) { vy =   0; vy_dir = -1; }
-
-                vw += vw_dir;
-                if      (vw >=  10) { vw =  10; vw_dir = -1; }
-                else if (vw <= -10) { vw = -10; vw_dir =  1; }
-            }
-
-            Chassis.vx_target = vx;
-            Chassis.vy_target = vy;
-            Chassis.wz_target = vw;
-#endif
-						Chassis.vx_target = Chassis.pc_speed.rx_vx;
-            Chassis.vy_target = Chassis.pc_speed.rx_vy;
-            Chassis.wz_target = Chassis.pc_speed.rx_vw;
-						
-            PC_Info_Upload(Chassis.vx_target, Chassis.vy_target, Chassis.wz_target);
-
-            /* 导航模式: 上位机速度控制底盘 */
-            if (Chassis.mode == CHASSIS_MODE_NAV)
-            {
-                Chassis_Set_Velocity(&Chassis, Chassis.pc_speed.rx_vx, Chassis.pc_speed.rx_vy, Chassis.pc_speed.rx_vw);
-            }
-        }
+        Chassis_Mode_Dispatch(&Chassis);                         /* 按模式分发控制逻辑 */
+        Chassis_Motor_Output(&Chassis);                          /* 统一输出到电机 */
+        PC_Info_Upload(Chassis.vx_target, Chassis.vy_target, Chassis.wz_target);
 
         osDelay(1);
     }
 }
 
+/**
+ * @brief  底盘初始化: 使能四路电机
+ */
 void Chassis_Init(Chassis_Info_Typedef *chassis)
 {
     for (uint8_t i = 0; i < 4; i++)
@@ -103,6 +98,9 @@ void Chassis_Init(Chassis_Info_Typedef *chassis)
     chassis->init_flag = 1;
 }
 
+/**
+ * @brief  设置底盘目标速度 (带限幅)
+ */
 void Chassis_Set_Velocity(Chassis_Info_Typedef *chassis, float vx, float vy, float wz)
 {
     VAL_LIMIT(vx, -CHASSIS_MAX_V, CHASSIS_MAX_V);
@@ -114,36 +112,94 @@ void Chassis_Set_Velocity(Chassis_Info_Typedef *chassis, float vx, float vy, flo
     chassis->wz_target = wz;
 }
 
+/**
+ * @brief  底盘急停
+ */
 void Chassis_Stop(Chassis_Info_Typedef *chassis)
 {
     Chassis_Set_Velocity(chassis, 0, 0, 0);
 }
 
+/* ---------------------------------------------------------------------------*/
+/*                          Mode Dispatch Layer                               */
+/* ---------------------------------------------------------------------------*/
+
 /**
- * @brief  麦轮逆运动学解算：vx/vy [m/s], wz [rad/s] → 四轮转速 [rpm]
- * @note   右手系：vx>0 前进, vy>0 右移, wz>0 逆时针
+ * @brief  根据当前模式分派到对应的模式处理函数
+ * @note   新增控制模式时只需: 1)添加 case 分支  2)实现对应的 Handler
  */
-static void Mecanum_Wheel_Calc(Chassis_Info_Typedef *chassis, float vx, float vy, float wz)
+static void Chassis_Mode_Dispatch(Chassis_Info_Typedef *chassis)
 {
-    float rpm[4];   /* [rpm] */
+    switch (chassis->mode)
+    {
+        case CHASSIS_MODE_RC:
+            Chassis_RC_Mode_Handler(chassis);
+            break;
 
-    /*  vx[m/s], vy[m/s], wz[rad/s] → 轮边线速度 [m/s] → rpm */
-    rpm[WHEEL_LF] = (+vx + vy + wz * CHASSIS_L) * WHEEL_RAD_TO_RPM; /* LF, [rpm] */
-    rpm[WHEEL_RF] = (-vx + vy + wz * CHASSIS_L) * WHEEL_RAD_TO_RPM; /* RF, [rpm] */
-    rpm[WHEEL_LB] = (+vx - vy + wz * CHASSIS_L) * WHEEL_RAD_TO_RPM; /* LB, [rpm] */
-    rpm[WHEEL_RB] = (-vx - vy + wz * CHASSIS_L) * WHEEL_RAD_TO_RPM; /* RB, [rpm] */
+        case CHASSIS_MODE_NAV:
+            Chassis_NAV_Mode_Handler(chassis);
+            break;
 
-    /* 机械正负号修正 + 发速度命令（加速度=0） */
-    Stepper_Motor_Set_Speed(&chassis->Motor[WHEEL_LF], RPM_TO_MOTOR(rpm[WHEEL_LF]), 0, 3);
-    Stepper_Motor_Set_Speed(&chassis->Motor[WHEEL_RF], RPM_TO_MOTOR(rpm[WHEEL_RF]), 0, 3);
-    Stepper_Motor_Set_Speed(&chassis->Motor[WHEEL_LB], RPM_TO_MOTOR(rpm[WHEEL_LB]), 0, 3);
-    Stepper_Motor_Set_Speed(&chassis->Motor[WHEEL_RB], RPM_TO_MOTOR(rpm[WHEEL_RB]), 0, 3);
+        default:
+            Chassis_Stop(chassis);
+            break;
+    }
 }
 
+/* ---------------------------------------------------------------------------*/
+/*                         Mode Handler Functions                             */
+/* ---------------------------------------------------------------------------*/
+
+/**
+ * @brief  RC 遥控器模式 —— 速度由 PS2 任务通过 Chassis_Set_Velocity() 设置
+ */
+static void Chassis_RC_Mode_Handler(Chassis_Info_Typedef *chassis)
+{
+    (void)chassis;
+    /* 无额外处理: PS2 任务已直接写入 vx_target/vy_target/wz_target */
+}
+
+/**
+ * @brief  NAV 导航模式 —— 读取上位机下发速度并应用到底盘
+ */
+static void Chassis_NAV_Mode_Handler(Chassis_Info_Typedef *chassis)
+{
+    Chassis_Set_Velocity(chassis,
+                         chassis->pc_speed.rx_vx,
+                         chassis->pc_speed.rx_vy,
+                         chassis->pc_speed.rx_vw);
+}
+
+/* ---------------------------------------------------------------------------*/
+/*                          Motor Output Layer                                */
+/* ---------------------------------------------------------------------------*/
+
+/**
+ * @brief  输出电机控制指令 (初始化完成前不输出)
+ */
 static void Chassis_Motor_Output(Chassis_Info_Typedef *chassis)
 {
     if (chassis->init_flag == 0)
         return;
 
     Mecanum_Wheel_Calc(chassis, chassis->vx_target, chassis->vy_target, chassis->wz_target);
+}
+
+/**
+ * @brief  麦轮逆运动学解算: vx/vy [m/s], wz [rad/s] → 四轮转速 [rpm]
+ * @note   右手系: vx>0 前进,  vy>0 右移,  wz>0 逆时针
+ */
+static void Mecanum_Wheel_Calc(Chassis_Info_Typedef *chassis, float vx, float vy, float wz)
+{
+    float rpm[4];
+
+    rpm[WHEEL_LF] = (+vx + vy + wz * CHASSIS_L) * WHEEL_RAD_TO_RPM;
+    rpm[WHEEL_RF] = (-vx + vy + wz * CHASSIS_L) * WHEEL_RAD_TO_RPM;
+    rpm[WHEEL_LB] = (+vx - vy + wz * CHASSIS_L) * WHEEL_RAD_TO_RPM;
+    rpm[WHEEL_RB] = (-vx - vy + wz * CHASSIS_L) * WHEEL_RAD_TO_RPM;
+
+    Stepper_Motor_Set_Speed(&chassis->Motor[WHEEL_LF], RPM_TO_MOTOR(rpm[WHEEL_LF]), 0, 3);
+    Stepper_Motor_Set_Speed(&chassis->Motor[WHEEL_RF], RPM_TO_MOTOR(rpm[WHEEL_RF]), 0, 3);
+    Stepper_Motor_Set_Speed(&chassis->Motor[WHEEL_LB], RPM_TO_MOTOR(rpm[WHEEL_LB]), 0, 3);
+    Stepper_Motor_Set_Speed(&chassis->Motor[WHEEL_RB], RPM_TO_MOTOR(rpm[WHEEL_RB]), 0, 3);
 }
